@@ -75,13 +75,18 @@ pipenv run python main.py migrate-single-page \
 
 ## CLI
 
+`main.py` before specifying the command the log level can be set.
+
+| Option | Required | Description |
+|:-------|:---------|:------------|
+| `--log-level` | ❌ | Set the log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) — defaults to `INFO` |
+
 `execute-migration`
 
 | Option | Required | Description |
 |:-------|:---------|:------------|
 | `-sd`, `--slite-directory` | ✅ | Path to the Slite `channels/` directory |
 | `-pc`, `--private-channels` | ❌ | Comma-separated list of private channel names (must match exactly) |
-| `--log-level` | ❌ | Set the log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) — defaults to `INFO` |
 
 `migrate-single-page`
 
@@ -93,4 +98,3 @@ pipenv run python main.py migrate-single-page \
 | `--space-id` | ✅ | Confluence Space ID where the page will be created |
 | `--space-key` | ✅ | Confluence Space Key (short code for the space) |
 | `--parent-id` | ❌ | (Optional) Confluence Parent Page ID to nest the new page under |
-| `--log-level` | ❌ | Set the log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) — defaults to `INFO` |
