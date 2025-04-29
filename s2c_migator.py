@@ -230,6 +230,7 @@ class SliteToConfluenceMigrator:
 
     def migrate_pages(self):
         self._load_progress("structure")
+        self._load_progress("url_map")
 
         for channel, data in self.structure.items():
             space_id = data.get("space_id")
@@ -371,6 +372,8 @@ class SliteToConfluenceMigrator:
 
             if page_data.get("parent"):
                 self.logger.debug(f"    Page {title} has parent {page_data['parent']}")
+                self.url_map[page_data["path"]] = f'{self.client.base_space_url}/{space_key}/pages/{page_data["page_id"]}'
+                self._save_progress("url_map")
 
             if page_data.get("uploaded"):
                 self.logger.debug(f"        Page {title} is already uploaded. Progressing.")
@@ -455,7 +458,7 @@ class SliteToConfluenceMigrator:
 
     def replace_local_slite_links(self, markdown):
         self._load_progress("url_map")
-        pattern = r'\[((?:\\.|[^\]])+)]\(([^)]+)\)'
+        pattern = r'(?<!\\)\[((?:\\.|[^\[\]\\])*)](?:\(([^)]+)\))'
 
         def replacer(match):
             text, link = match.groups()
@@ -467,7 +470,9 @@ class SliteToConfluenceMigrator:
             if sanitised_link in self.url_map:
                 self.logger.debug(f"REPLACING: [{text}]({link}) -> [{text}]({self.url_map[sanitised_link]})")
                 return f"[{text}]({self.url_map[sanitised_link]})"
+            self.logger.debug(f"Did not find link in url_map")
             return match.group(0)
+        self.logger.debug("Returning string sub")
         return re.sub(pattern, replacer, markdown)
 
     def fix_all_references(self):
@@ -506,6 +511,7 @@ class SliteToConfluenceMigrator:
         :param page_id:
         :return:
         """
+        self.logger.debug(f"Attempting to fix page references for {title} - {page_id}")
 
         with open(page_path, "r", encoding="utf-8") as file:
             original_md = file.read()
@@ -599,6 +605,7 @@ class SliteToConfluenceMigrator:
 
                     # TODO this is a complete hack to re-do the page references.
                     # I will have to refactor to do media and links in one pass.
+                    self.logger.debug("Updating local slite links in media")
                     linked_markdown = self.replace_local_slite_links(markdown)
                     if linked_markdown != markdown:
                         markdown = linked_markdown
