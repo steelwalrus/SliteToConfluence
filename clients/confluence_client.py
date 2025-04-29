@@ -124,6 +124,8 @@ class ConfluenceClient:
     def update_page(self, page_id, title, content, version, version_message):
         url = f"{self.base_url_v2}/pages/{page_id}"
 
+        self.logger.debug(f"Updating page in confluence {title} - {page_id} - {version}")
+
         payload = {
             "id": page_id,
             "status": "current",

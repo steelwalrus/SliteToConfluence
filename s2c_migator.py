@@ -230,6 +230,7 @@ class SliteToConfluenceMigrator:
 
     def migrate_pages(self):
         self._load_progress("structure")
+        self._load_progress("url_map")
 
         for channel, data in self.structure.items():
             space_id = data.get("space_id")
@@ -385,6 +386,7 @@ class SliteToConfluenceMigrator:
 
                     # Update url map for later updating of references
                     self.url_map[page_data["path"]] = f'{self.client.base_space_url}/{space_key}/pages/{page_id}'
+                    self.logger.debug(f'Updated url map {page_data["path"]} = {self.url_map[page_data["path"]]}')
 
                     self._save_progress("structure")
                     self._save_progress("url_map")
@@ -438,8 +440,8 @@ class SliteToConfluenceMigrator:
                     continue
 
                 for i, (pages_dict, old_title, data, parent_title) in enumerate(entries):
-                    new_title = f"{old_title} ({parent_title})"
-                    self.logger.debug(f"Updating {old_title} to {new_title}.")
+                    new_title = f"{old_title.strip()} ({parent_title})"
+                    self.logger.debug(f"Updating {old_title.strip()} to {new_title}.")
                     if new_title in used_titles:
                         self.logger.debug(f"{new_title} is still not unique!")
                         new_title = f"{new_title} {shortuuid.ShortUUID().random(8)}"
@@ -454,17 +456,21 @@ class SliteToConfluenceMigrator:
 
     def replace_local_slite_links(self, markdown):
         self._load_progress("url_map")
-        pattern = r'\[([^\]]+)]\(([^)]+)\)'
+        pattern = r'(?<!\\)\[((?:\\.|[^\[\]\\])*)](?:\(([^)]+)\))'
 
         def replacer(match):
             text, link = match.groups()
             sanitised_link = urllib.parse.unquote(link)
             sanitised_link = f"{self.base_dir}{sanitised_link}"
 
+            self.logger.debug(f"Sanitised link {sanitised_link}")
+
             if sanitised_link in self.url_map:
                 self.logger.debug(f"REPLACING: [{text}]({link}) -> [{text}]({self.url_map[sanitised_link]})")
                 return f"[{text}]({self.url_map[sanitised_link]})"
+            self.logger.debug(f"Did not find link in url_map")
             return match.group(0)
+        self.logger.debug("Returning string sub")
         return re.sub(pattern, replacer, markdown)
 
     def fix_all_references(self):
@@ -483,33 +489,10 @@ class SliteToConfluenceMigrator:
                 if page_data.get("links_fixed"):
                     self.logger.debug(f"Links already fixed for {page_path}")
                 else:
-                    with open(page_path, "r", encoding="utf-8") as file:
-                        original_md = file.read()
-
-                    updated_md = self.replace_local_slite_links(original_md)
-
-                    if updated_md != original_md:
-                        content = self.render_content_for_confluence(content=updated_md)
-
-                        # Get and increment the version number
-                        page_version_number = self.get_page_version_number(page_id)
-                        page_version_number += 1
-
-                        success = self.client.update_page(
-                            page_id,
-                            title,
-                            content,
-                            page_version_number,
-                            "Replacing Slite references with confluence urls"
-                        )
-                        if success:
-                            page_data["links_fixed"] = True
-                            self.logger.info(f"Updated links for {title}")
-                            self._save_progress("structure")
-                        else:
-                            self.logger.error(f"Failed to update links for {title}")
-                    else:
-                        self.logger.debug(f"No links to fix for {title}")
+                    success = self.fix_single_page_references(title, page_path, page_id)
+                    if success:
+                        page_data["links_fixed"] = True
+                        self._save_progress("structure")
 
                 if page_data.get("children"):
                     _fix_all_references(page_data["children"])
@@ -517,6 +500,47 @@ class SliteToConfluenceMigrator:
         for channel, data in self.structure.items():
             self.logger.info(f"\nFixing urls in space {channel}")
             _fix_all_references(data["children"])
+
+    def fix_single_page_references(self, title, page_path, page_id):
+        """
+        Must have a valid url_map.json generated in order for this work.
+        :param title:
+        :param page_path: 
+        :param page_id:
+        :return:
+        """
+        self.logger.debug(f"Attempting to fix page references for {title} - {page_id}")
+
+        with open(page_path, "r", encoding="utf-8") as file:
+            original_md = file.read()
+
+        updated_md = self.replace_local_slite_links(original_md)
+
+        if updated_md != original_md:
+            content = self.render_content_for_confluence(content=updated_md)
+        else:
+            self.logger.debug(f"No links to fix for {title}")
+            return False
+
+        # Get and increment the version number
+        page_version_number = self.get_page_version_number(page_id)
+        page_version_number += 1
+
+        success = self.client.update_page(
+            page_id,
+            title,
+            content,
+            page_version_number,
+            "Replacing Slite references with confluence urls"
+        )
+
+        if success:
+            self.logger.info(f"Updated links for {title}")
+            return True
+
+        self.logger.error(f"Failed to update links for {title}")
+
+        return False
 
     def get_page_version_number(self, page_id):
         page = self.client.get_page(page_id)
@@ -577,6 +601,13 @@ class SliteToConfluenceMigrator:
                     with open(page_path, "r") as file:
                         markdown = file.read()
 
+                    # TODO this is a complete hack to re-do the page references.
+                    # I will have to refactor to do media and links in one pass.
+                    self.logger.debug("Updating local slite links in media")
+                    linked_markdown = self.replace_local_slite_links(markdown)
+                    if linked_markdown != markdown:
+                        markdown = linked_markdown
+
                     for filename, status in media_files.items():
                         url_encoded_filename = urllib.parse.quote(filename)
 
@@ -590,6 +621,7 @@ class SliteToConfluenceMigrator:
                         )
 
                         self.logger.debug(f"Updating markdown for {filename} → {atlassian_attachment_url}")
+
 
                     html = self.render_content_for_confluence(markdown)
 
