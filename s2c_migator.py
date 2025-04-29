@@ -372,8 +372,6 @@ class SliteToConfluenceMigrator:
 
             if page_data.get("parent"):
                 self.logger.debug(f"    Page {title} has parent {page_data['parent']}")
-                self.url_map[page_data["path"]] = f'{self.client.base_space_url}/{space_key}/pages/{page_data["page_id"]}'
-                self._save_progress("url_map")
 
             if page_data.get("uploaded"):
                 self.logger.debug(f"        Page {title} is already uploaded. Progressing.")
