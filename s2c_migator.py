@@ -442,8 +442,8 @@ class SliteToConfluenceMigrator:
                     continue
 
                 for i, (pages_dict, old_title, data, parent_title) in enumerate(entries):
-                    new_title = f"{old_title} ({parent_title})"
-                    self.logger.debug(f"Updating {old_title} to {new_title}.")
+                    new_title = f"{old_title.strip()} ({parent_title})"
+                    self.logger.debug(f"Updating {old_title.strip()} to {new_title}.")
                     if new_title in used_titles:
                         self.logger.debug(f"{new_title} is still not unique!")
                         new_title = f"{new_title} {shortuuid.ShortUUID().random(8)}"
