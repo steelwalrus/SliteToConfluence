@@ -121,7 +121,7 @@ class ConfluenceClient:
         except Exception as e:
             raise Exception(f"Error creating page '{title}': {e}")
 
-    def update_page(self, page_id, title, content, version, version_message):
+    def _update_page(self, page_id, title, content, version, version_message):
         url = f"{self.base_url_v2}/pages/{page_id}"
 
         self.logger.debug(f"Updating page in confluence {title} - {page_id} - {version}")
@@ -210,3 +210,22 @@ class ConfluenceClient:
                 f" Failed to set space home page '{page_id}'. Status: {response.status_code}\nResponse: {response.text}")
         except Exception as e:
             raise Exception(f"Error setting space homepage '{page_id}': {e}")
+
+    def update_page(self, page_id, title, content, version_message):
+        # Get and increment the version number
+        page_version_number = self._get_page_version_number(page_id)
+        page_version_number += 1
+
+        success = self._update_page(
+            page_id,
+            title,
+            content,
+            page_version_number,
+            version_message
+        )
+
+        return success
+
+    def _get_page_version_number(self, page_id):
+        page = self.get_page(page_id)
+        return page["version"]["number"]

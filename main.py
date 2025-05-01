@@ -30,9 +30,14 @@ class ClickColorFormatter(logging.Formatter):
     }
 
     def format(self, record):
-        msg = super().format(record)
-        color = self.LOG_COLORS.get(record.levelno, "white")
-        return click.style(msg, fg=color)
+        # Format string: [TIME] [LEVEL] message
+        log_time = self.formatTime(record, "%Y-%m-%d %H:%M:%S")
+        level = record.levelname
+        msg = record.getMessage()
+
+        formatted = f"[{log_time}] [{level}] {msg}"
+        color = self.LOG_COLORS.get(record.levelno)
+        return click.style(formatted, fg=color)
 
 
 @click.group()
@@ -66,8 +71,10 @@ def execute_migration(slite_directory, private_channels):
     migrator.deduplicate_titles()
     migrator.migrate_spaces()
     migrator.migrate_pages()
+
+    migrator.migrate_media()  # has intended side effect of fixing references
     migrator.fix_all_references()
-    migrator.migrate_media()
+
 
 
 @cli.command()
@@ -115,10 +122,30 @@ def migrate_single_page(slite_directory, title, path, space_id, space_key, paren
         parent_id=parent_id
     )
 
+    migrator.fix_single_page_references(title, path, page_id)
+
     if page_id:
         logger.info(f"Page created successfully with ID: {page_id}")
     else:
         logger.error(f"ERROR: Page creation failed.")
+
+
+@cli.command()
+@click.option("--slite-directory", "-sd", required=True, help="Directory of Slite channels backup")
+@click.option("--title", "-t", required=True, help="Title of the page to create")
+@click.option("--path", "-f", required=True, type=click.Path(exists=True), help="Path to the markdown file")
+@click.option("--page-id", "-pid", required=True, help="Confluence page id")
+def migrate_media_single_page(slite_directory, title, path, page_id):
+    logger.info(f"Updating media for {title}")
+
+    migrator = SliteToConfluenceMigrator(slite_directory, confluence_client, markdown_sanitiser, logger)
+    upload_status, links_fixed, media_links_fixed = migrator.migrate_media_for_single_page(title, path, page_id)
+
+    for file in upload_status:
+        logger.debug(f"{file} uploaded = {upload_status[file]['uploaded']}")
+
+    logger.debug(f"Links Fixed = {links_fixed}")
+    logger.debug(f"Media Links Fixed = {media_links_fixed}")
 
 
 if __name__ == "__main__":
