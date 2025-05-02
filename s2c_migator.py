@@ -331,7 +331,7 @@ class SliteToConfluenceMigrator:
                         'warning': 'warning',
                         'tip': 'tip',
                         'important': 'important',
-                        'caution': 'caution'
+                        'caution': 'warning' # No caution in confluence.
                     }
 
                     macro_name = macro_map.get(admonition_type, 'info')
@@ -550,14 +550,11 @@ class SliteToConfluenceMigrator:
         for channel, data in self.structure.items():
             self._migrate_media(channel, data["children"])
 
-    def migrate_media_for_single_page(self, title, page_path, page_id, media_uploaded=None):
+    def migrate_media_for_single_page(self, title, page_path, page_id, media_uploaded=None, links_fixed=False, media_links_fixed=False):
         # TODO Solid principles and all that.
 
         if not media_uploaded:
             media_uploaded = {}
-
-        links_fixed = False
-        media_links_fixed = False
 
         self.logger.debug(f"checking_media for {title}")
         media_path_title = f"Media_{os.path.basename(page_path)[:-3]}"  # removes .md
@@ -608,8 +605,12 @@ class SliteToConfluenceMigrator:
                         self.logger.error(f"Upload failed for {file}: {e}")
                     # ----
 
+                if media_links_fixed:
+                    self.logger.debug(f"    Media links already fixed for {title} continuing...")
+                    return media_uploaded, False, True
+
                 url_encoded_filename = urllib.parse.quote(file, safe="()")
-                self.logger.info(f"Url encoded file = `{url_encoded_filename}`")
+                self.logger.debug(f"Url encoded file = `{url_encoded_filename}`")
 
                 atlassian_attachment_url = f"{self.client.base_url}/download/attachments/" \
                                            f"{page_id}/{url_encoded_filename}"
@@ -641,13 +642,15 @@ class SliteToConfluenceMigrator:
             self.logger.error(f"Error updating markdown for {title}")
             return media_uploaded, False, False
 
-
     def _migrate_media(self, channel, pages):
         for title, page_data in pages.items():
             page_path = page_data.get("path")
             page_id = page_data.get("page_id")
 
             media_files = page_data.get("media_uploaded", {})
+            media_links_fixed = page_data.get("media_links_fixed")
+            links_fixed = page_data.get("links_fixed")
+
             if media_files:
                 self.logger.debug(f"Checking media for: {title}")
 
@@ -655,7 +658,9 @@ class SliteToConfluenceMigrator:
                     title,
                     page_path,
                     page_id,
-                    media_files
+                    media_files,
+                    links_fixed,
+                    media_links_fixed
                 )
 
                 page_data["links_fixed"] = links_fixed
