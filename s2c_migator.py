@@ -9,7 +9,7 @@ import urllib.parse
 
 class SliteToConfluenceMigrator:
     def __init__(self, base_dir, confluence_client, markdown_sanitiser, logger):
-        self.base_dir = base_dir
+        self.base_dir = base_dir.rstrip("/")
         self.client = confluence_client
 
         self.structure = {}
@@ -179,14 +179,10 @@ class SliteToConfluenceMigrator:
                 raw_md = file.read()
                 html = self.render_content_for_confluence(raw_md)
 
-            page_version_number = self.get_page_version_number(home_page_id)
-            page_version_number += 1
-
             r_page_id = self.client.update_page(
                 page_id=home_page_id,
                 title=f"{channel_name} Home",
                 content=html,
-                version=page_version_number,
                 version_message="Updated homepage"
             )
 
@@ -246,6 +242,8 @@ class SliteToConfluenceMigrator:
         content = self.markdown_sanitiser.fix_duplicate_links(content)
         # Convert !! style admonitions for parsing in html later
         content = self.markdown_sanitiser.convert_bang_admonitions(content)
+
+        content = self.markdown_sanitiser.clean_url_escapes(content)
 
         # Convert markdown to html
         html = markdown.markdown(content, extensions=["tables", "fenced_code"])
@@ -333,7 +331,7 @@ class SliteToConfluenceMigrator:
                         'warning': 'warning',
                         'tip': 'tip',
                         'important': 'important',
-                        'caution': 'caution'
+                        'caution': 'warning' # No caution in confluence.
                     }
 
                     macro_name = macro_map.get(admonition_type, 'info')
@@ -375,6 +373,8 @@ class SliteToConfluenceMigrator:
 
             if page_data.get("uploaded"):
                 self.logger.debug(f"        Page {title} is already uploaded. Progressing.")
+                # self.url_map[page_data["path"]] = f'{self.client.base_space_url}/{space_key}/pages/{page_data["page_id"]}'
+                # self._save_progress("url_map")
             else:
                 content_path = page_data["path"]
 
@@ -456,11 +456,14 @@ class SliteToConfluenceMigrator:
 
     def replace_local_slite_links(self, markdown):
         self._load_progress("url_map")
-        pattern = r'(?<!\\)\[((?:\\.|[^\[\]\\])*)](?:\(([^)]+)\))'
+        pattern = r'(?<!\\)\[((?:\\.|[^\[\]\\])*)\]\(((?:\\.|[^\\()\n])+)\)'
 
         def replacer(match):
             text, link = match.groups()
             sanitised_link = urllib.parse.unquote(link)
+            # TODO This needs a universal fix
+            sanitised_link = sanitised_link.replace("\\(", "(").replace("\\)", ")")
+            # sanitised_link = sanitised_link.replace("\\&", "&")
             sanitised_link = f"{self.base_dir}{sanitised_link}"
 
             self.logger.debug(f"Sanitised link {sanitised_link}")
@@ -469,6 +472,7 @@ class SliteToConfluenceMigrator:
                 self.logger.debug(f"REPLACING: [{text}]({link}) -> [{text}]({self.url_map[sanitised_link]})")
                 return f"[{text}]({self.url_map[sanitised_link]})"
             self.logger.debug(f"Did not find link in url_map")
+            self.logger.debug(f"Returning {match.group(0)}")
             return match.group(0)
         self.logger.debug("Returning string sub")
         return re.sub(pattern, replacer, markdown)
@@ -522,15 +526,10 @@ class SliteToConfluenceMigrator:
             self.logger.debug(f"No links to fix for {title}")
             return False
 
-        # Get and increment the version number
-        page_version_number = self.get_page_version_number(page_id)
-        page_version_number += 1
-
         success = self.client.update_page(
             page_id,
             title,
             content,
-            page_version_number,
             "Replacing Slite references with confluence urls"
         )
 
@@ -542,10 +541,6 @@ class SliteToConfluenceMigrator:
 
         return False
 
-    def get_page_version_number(self, page_id):
-        page = self.client.get_page(page_id)
-        return page["version"]["number"]
-
     def migrate_media(self):
         # Step 1 identify associated media with the respective channel / page.
         # Step 2 upload as an attachment using the confluence client
@@ -555,94 +550,122 @@ class SliteToConfluenceMigrator:
         for channel, data in self.structure.items():
             self._migrate_media(channel, data["children"])
 
+    def migrate_media_for_single_page(self, title, page_path, page_id, media_uploaded=None, links_fixed=False, media_links_fixed=False):
+        # TODO Solid principles and all that.
+
+        if not media_uploaded:
+            media_uploaded = {}
+
+        self.logger.debug(f"checking_media for {title}")
+        media_path_title = f"Media_{os.path.basename(page_path)[:-3]}"  # removes .md
+        media_directory = os.path.join(*page_path.split('/')[:-1], media_path_title)
+
+        if not os.path.exists(media_directory):
+            self.logger.warning(f"Media folder missing: {media_directory}")
+            return media_uploaded, links_fixed, media_links_fixed
+
+        with open(page_path, "r") as file:
+            markdown = file.read()
+
+        # Replace local slite links ----
+
+        self.logger.debug("Updating local slite links in media")
+        linked_markdown = self.replace_local_slite_links(markdown)
+        if linked_markdown != markdown:
+            markdown = linked_markdown
+            links_fixed = True
+
+        # ---
+
+        # Sometimes Slite escapes characters in the url, e.g. \(
+        # so file gets uploaded but will not render in doc
+        markdown = self.markdown_sanitiser.clean_url_escapes(markdown)
+
+        for root, dirs, files in os.walk(media_directory):
+            for file in files:
+                self.logger.debug(f"Processing media: {file}")
+                full_path = os.path.join(root, file)
+                file_name = urllib.parse.unquote(file)
+
+                if file_name not in media_uploaded:
+                    self.logger.warning(f"{file_name} missing in structure. Adding.")
+                    media_uploaded[file_name] = {"uploaded": False}
+
+                if media_uploaded[file_name]["uploaded"]:
+                    self.logger.debug(f"Already uploaded: {file_name}")
+                else:
+                    # Do attachment upload ----
+                    try:
+                        self.logger.info(f" Uploading {file}")
+                        self.client.upload_attachment(page_id, full_path)
+                        self.logger.info(f"Uploaded: {file}")
+                        media_uploaded[file_name]["uploaded"] = True
+
+                    except Exception as e:
+                        self.logger.error(f"Upload failed for {file}: {e}")
+                    # ----
+
+                if media_links_fixed:
+                    self.logger.debug(f"    Media links already fixed for {title} continuing...")
+                    return media_uploaded, False, True
+
+                url_encoded_filename = urllib.parse.quote(file, safe="()")
+                self.logger.debug(f"Url encoded file = `{url_encoded_filename}`")
+
+                atlassian_attachment_url = f"{self.client.base_url}/download/attachments/" \
+                                           f"{page_id}/{url_encoded_filename}"
+
+                self.logger.debug(f"Attachment url = {atlassian_attachment_url}")
+
+                markdown = re.sub(
+                    rf'!\[([^\]]*)\]\((.*?{re.escape(url_encoded_filename)}.*?)\)',
+                    rf'![\1]({atlassian_attachment_url})',
+                    markdown
+                )
+
+                self.logger.debug(f"Updating markdown for {file} → {atlassian_attachment_url}")
+
+        html = self.render_content_for_confluence(markdown)
+
+        response = self.client.update_page(
+            page_id,
+            title,
+            html,
+            "linked media"
+        )
+
+        if response:
+            self.logger.info(f"Media links for {title} resolved")
+            media_links_fixed = True
+            return media_uploaded, links_fixed, media_links_fixed
+        else:
+            self.logger.error(f"Error updating markdown for {title}")
+            return media_uploaded, False, False
+
     def _migrate_media(self, channel, pages):
         for title, page_data in pages.items():
             page_path = page_data.get("path")
             page_id = page_data.get("page_id")
 
             media_files = page_data.get("media_uploaded", {})
+            media_links_fixed = page_data.get("media_links_fixed")
+            links_fixed = page_data.get("links_fixed")
+
             if media_files:
                 self.logger.debug(f"Checking media for: {title}")
 
-                media_path_title = f"Media_{os.path.basename(page_path)[:-3]}"  # removes .md
-                media_directory = os.path.join(*page_path.split('/')[:-1], media_path_title)
+                upload_status, links_fixed, media_links_fixed = self.migrate_media_for_single_page(
+                    title,
+                    page_path,
+                    page_id,
+                    media_files,
+                    links_fixed,
+                    media_links_fixed
+                )
 
-                if not os.path.exists(media_directory):
-                    self.logger.warning(f"Media folder missing: {media_directory}")
-                else:
-                    for filename, status in media_files.items():
-                        if status["uploaded"]:
-                            self.logger.debug(f"Already uploaded: {filename}")
-                            continue
-
-                        full_path = os.path.join(media_directory, filename)
-
-                        if not os.path.isfile(full_path):
-                            self.logger.error(f"File missing: {full_path}")
-                            status["error"] = "file not found"
-                            continue
-
-                        try:
-                            self.logger.info(f"  Uploading: {filename}")
-                            self.client.upload_attachment(page_id, full_path)
-                            status["uploaded"] = True
-                            self.logger.info(f"Uploaded: {filename}")
-
-                            self._save_progress("structure")  # Save after each successful upload
-
-                        except Exception as e:
-                            self.logger.error(f"Upload failed for {filename}: {e}")
-                            status["error"] = str(e)
-
-                    if page_data["media_links_fixed"]:
-                        self.logger.debug(f"Already linked media for: {title}")
-                        continue
-
-                    with open(page_path, "r") as file:
-                        markdown = file.read()
-
-                    # TODO this is a complete hack to re-do the page references.
-                    # I will have to refactor to do media and links in one pass.
-                    self.logger.debug("Updating local slite links in media")
-                    linked_markdown = self.replace_local_slite_links(markdown)
-                    if linked_markdown != markdown:
-                        markdown = linked_markdown
-
-                    for filename, status in media_files.items():
-                        url_encoded_filename = urllib.parse.quote(filename)
-
-                        atlassian_attachment_url = f"{self.client.base_url}/download/attachments/{page_id}/{url_encoded_filename}"
-                        self.logger.debug(f"Attachment url = {atlassian_attachment_url}")
-
-                        markdown = re.sub(
-                            rf'!\[([^\]]*)\]\(([^)]*{re.escape(url_encoded_filename)})\)',
-                            rf'![\1]({atlassian_attachment_url})',
-                            markdown
-                        )
-
-                        self.logger.debug(f"Updating markdown for {filename} → {atlassian_attachment_url}")
-
-
-                    html = self.render_content_for_confluence(markdown)
-
-                    # Get an increment the version number
-                    page_version_number = self.get_page_version_number(page_id)
-                    page_version_number += 1
-
-                    response = self.client.update_page(
-                        page_id=page_id,
-                        title=title,
-                        content=html,
-                        version=page_version_number,
-                        version_message="Linked media"
-                    )
-
-                    if response:
-                        page_data["media_links_fixed"] = True
-                        self._save_progress("structure")
-                        self.logger.info(f"Media links for {title} resolved")
-                    else:
-                        self.logger.error(f"Error updating markdown for {title}")
+                page_data["links_fixed"] = links_fixed
+                page_data["media_links_fixed"] = media_links_fixed
+                self._save_progress("structure")
 
             # Recurse into child pages
             if page_data.get("children"):

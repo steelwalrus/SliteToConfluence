@@ -74,6 +74,10 @@ class MarkdownHtmlSanitiser:
 
 		return content
 
+	def clean_url_escapes(self, content):
+		# Unescape things like \& or \? that were incorrectly added by Slite
+		return re.sub(r'\\([&?=()])', r'\1', content)
+
 	def fix_duplicate_links(self, content):
 		link_pattern = re.compile(r'(\<https.*\>|https.*)\n*(\[\\\[(http.*)\\]]\(http.*\))', re.MULTILINE)
 		self.logger.debug("Fixing duplicate links")
